@@ -239,17 +239,28 @@ class GameRenderer:
         self._hero = in_hero
 
     def respawn_ghost(self, ghost):
-        self._ghosts.remove(ghost) # Remove from _ghosts list
-        pygame.time.set_timer(self._ghost_respawn_event, self._ghost_respawn_time, loops=1)
+        index = self._ghosts.index(ghost) if ghost in self._ghosts else 0
 
+        if ghost in self._ghosts:
+            self._ghosts.remove(ghost)
+        if ghost in self._game_objects:
+            self._game_objects.remove(ghost)
+
+        index = self._ghosts.index(ghost) if ghost in self._ghosts else 0
+        translated = translate_maze_to_screen(self.pacman_game.ghost_spawns[index])
+        new_ghost = Ghost(self, translated[0], translated[1], 32, self.pacman_game, ghost.sprite_normal_path)
+        new_ghost.speed = 0.5 if self.is_kokoro_active() else self.pacman_game.ghost_speed
+        self.add_ghost(new_ghost)
+        self.add_game_object(new_ghost)
+    
     def respawn_ghosts_after_timeout(self):
         if len(self._ghosts) < len(self.pacman_game.ghost_spawns):
-            center_x = self._width // 2
-            center_y = self._height // 2
-            for i in range(len(self.pacman_game.ghost_spawns) - len(self._ghosts)): # Only create missing ghosts
-                ghost = Ghost(self, center_x, center_y, 32, self.pacman_game,
-                              self.pacman_game.ghost_colors[i % 4])
-                self.add_ghost(ghost)
+            for i in range(len(self.pacman_game.ghost_spawns)):
+                if i >= len(self._ghosts): # Check if ghost needs to be respawned
+                    translated = translate_maze_to_screen(self.pacman_game.ghost_spawns[i])
+                    ghost = Ghost(self, translated[0], translated[1], 32, self.pacman_game,
+                                  self.pacman_game.ghost_colors[i % 4])
+                    self.add_ghost(ghost)
 
     def _handle_events(self):
         for event in pygame.event.get():
@@ -402,10 +413,13 @@ class Hero(MovableObject):
             collides = collision_rect.colliderect(powerup.get_shape())
             if collides and powerup in game_objects:
                 if not self._renderer.is_kokoro_active():
-                    game_objects.remove(powerup)
+                    if powerup in game_objects:
+                        game_objects.remove(powerup)
+                    if powerup in powerups:
+                        powerups.remove(powerup)
                     self._renderer.add_score(ScoreType.POWERUP)
                     self._renderer.activate_kokoro()
-
+    
     def handle_ghosts(self):
         collision_rect = pygame.Rect(self.x, self.y, self._size, self._size)
         ghosts = self._renderer.get_ghosts()
@@ -414,13 +428,12 @@ class Hero(MovableObject):
             collides = collision_rect.colliderect(ghost.get_shape())
             if collides and ghost in game_objects:
                 if self._renderer.is_kokoro_active():
-                    self._renderer.respawn_ghost(ghost) # Respawn ghost *before* removing from game_objects
                     game_objects.remove(ghost)
+                    self._renderer.respawn_ghost(ghost)
                     self._renderer.add_score(ScoreType.GHOST)
                 else:
                     if not self._renderer.get_won():
                         self._renderer.kill_pacman()
-                        game_objects.remove(ghost)
 
     def draw(self):
         half_size = self._size / 2
@@ -433,8 +446,10 @@ class Ghost(MovableObject):
     def __init__(self, in_surface, x, y, in_size: int, in_game_controller, sprite_path="images/ghost_fright.png"):
         super().__init__(in_surface, x, y, in_size)
         self.game_controller = in_game_controller
-        self.sprite_normal = pygame.image.load(sprite_path)
+        self.sprite_normal_path = sprite_path
+        self.sprite_normal = pygame.image.load(self.sprite_normal_path)
         self.sprite_fright = pygame.image.load("images/ghost_fright.png")
+        self.speed = self.game_controller.ghost_speed
 
     def reached_target(self):
         if (self.x, self.y) == self.next_target:
@@ -470,25 +485,26 @@ class Ghost(MovableObject):
     def request_path_to_player(self, in_ghost):
         player_position = translate_screen_to_maze(in_ghost._renderer.get_hero_position())
         current_maze_coord = translate_screen_to_maze(in_ghost.get_position())
-        path = self.game_controller.p.get_path(current_maze_coord[1], current_maze_coord[0], player_position[1],
-                                               player_position[0])
+        path = self.game_controller.p.get_path(int(current_maze_coord[1]), int(current_maze_coord[0]), int(player_position[1]),
+                                               int(player_position[0]))
 
         new_path = [translate_maze_to_screen(item) for item in path]
         in_ghost.set_new_path(new_path)
 
     def automatic_move(self, in_direction: Direction):
         if in_direction == Direction.UP:
-            self.set_position(self.x, self.y - 1)
+            self.set_position(self.x, self.y - self.speed)
         elif in_direction == Direction.DOWN:
-            self.set_position(self.x, self.y + 1)
+            self.set_position(self.x, self.y + self.speed)
         elif in_direction == Direction.LEFT:
-            self.set_position(self.x - 1, self.y)
+            self.set_position(self.x - self.speed, self.y)
         elif in_direction == Direction.RIGHT:
-            self.set_position(self.x + 1, self.y)
+            self.set_position(self.x + self.speed, self.y)
+
     def draw(self):
         self.image = self.sprite_fright if self._renderer.is_kokoro_active() else self.sprite_normal
         super(Ghost, self).draw()
-        
+
 
 class FrightenedGhost(Ghost):
     def __init__(self, in_surface, x, y, in_size: int, in_game_controller, sprite_path="images/ghost_fright.png"):
@@ -533,7 +549,7 @@ class Pathfinder:
         self.pf = tcod.path.AStar(cost=cost, diagonal=0)
 
     def get_path(self, from_x, from_y, to_x, to_y) -> object:
-        res = self.pf.get_path(from_x, from_y, to_x, to_y)
+        res = self.pf.get_path(int(from_x), int(from_y), int(to_x), int(to_y))
         return [(sub[1], sub[0]) for sub in res]
 
 
@@ -590,6 +606,7 @@ class PacmanGameController:
         self._width = width
         self._height = height
         self.renderer = renderer
+        self.ghost_speed = 1
 
     def get_width(self):
         return self._width
@@ -598,8 +615,8 @@ class PacmanGameController:
         random_space = random.choice(self.reachable_spaces)
         current_maze_coord = translate_screen_to_maze(in_ghost.get_position())
 
-        path = self.p.get_path(current_maze_coord[1], current_maze_coord[0], random_space[1],
-                               random_space[0])
+        path = self.p.get_path(int(current_maze_coord[1]), int(current_maze_coord[0]), int(random_space[1]),
+                               int(random_space[0]))
         test_path = [translate_maze_to_screen(item) for item in path]
         in_ghost.set_new_path(test_path)
 
