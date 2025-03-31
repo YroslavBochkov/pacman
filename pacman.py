@@ -25,12 +25,12 @@ class GhostBehaviour(Enum):
     SCATTER = 2
 
 
-def translate_screen_to_maze(in_coords, in_size=32):
-    return int(in_coords[0] / in_size), int(in_coords[1] / in_size)
+def translate_screen_to_maze(screen_coord):
+    return (screen_coord[0] // 32, screen_coord[1] // 32)
 
 
-def translate_maze_to_screen(in_coords, in_size=32):
-    return in_coords[0] * in_size, in_coords[1] * in_size
+def translate_maze_to_screen(maze_coord):
+    return (maze_coord[0] * 32, maze_coord[1] * 32)
 
 
 class GameObject:
@@ -79,7 +79,7 @@ class Wall(GameObject):
 
 
 class GameRenderer:
-    def __init__(self, in_width: int, in_height: int):
+    def __init__(self, in_width: int, in_height: int, pacman_game):
         pygame.init()
         self._width = in_width
         self._height = in_height
@@ -104,6 +104,9 @@ class GameRenderer:
         self._mode_switch_event = pygame.USEREVENT + 1  # custom event
         self._kokoro_end_event = pygame.USEREVENT + 2
         self._pakupaku_event = pygame.USEREVENT + 3
+        self.ghosts = []
+        self._ghost_respawn_time = 5000  # Time in milliseconds
+        self._ghost_respawn_event = pygame.USEREVENT + 4
         self._modes = [
             (7, 20),
             (7, 20),
@@ -111,6 +114,7 @@ class GameRenderer:
             (5, 999999)  # 'infinite' chase seconds
         ]
         self._current_phase = 0
+        self.pacman_game = pacman_game
 
     def tick(self, in_fps: int):
         black = (0, 0, 0)
@@ -132,6 +136,9 @@ class GameRenderer:
             self._handle_events()
 
         print("Game over")
+    
+    def add_ghost(self, ghost):
+        self.ghosts.append(ghost)
 
     def handle_mode_switch(self):
         current_phase_timings = self._modes[self._current_phase]
@@ -231,6 +238,19 @@ class GameRenderer:
         self.add_game_object(in_hero)
         self._hero = in_hero
 
+    def respawn_ghost(self, ghost):
+        self._ghosts.remove(ghost) # Remove from _ghosts list
+        pygame.time.set_timer(self._ghost_respawn_event, self._ghost_respawn_time, loops=1)
+
+    def respawn_ghosts_after_timeout(self):
+        if len(self._ghosts) < len(self.pacman_game.ghost_spawns):
+            center_x = self._width // 2
+            center_y = self._height // 2
+            for i in range(len(self.pacman_game.ghost_spawns) - len(self._ghosts)): # Only create missing ghosts
+                ghost = Ghost(self, center_x, center_y, 32, self.pacman_game,
+                              self.pacman_game.ghost_colors[i % 4])
+                self.add_ghost(ghost)
+
     def _handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -245,6 +265,9 @@ class GameRenderer:
             if event.type == self._pakupaku_event:
                 if self._hero is None: break
                 self._hero.mouth_open = not self._hero.mouth_open
+
+            if event.type == self._ghost_respawn_event: # Handle respawn event
+                self.respawn_ghosts_after_timeout()
 
         pressed = pygame.key.get_pressed()
         if self._hero is None: return
@@ -391,6 +414,7 @@ class Hero(MovableObject):
             collides = collision_rect.colliderect(ghost.get_shape())
             if collides and ghost in game_objects:
                 if self._renderer.is_kokoro_active():
+                    self._renderer.respawn_ghost(ghost) # Respawn ghost *before* removing from game_objects
                     game_objects.remove(ghost)
                     self._renderer.add_score(ScoreType.GHOST)
                 else:
@@ -514,7 +538,7 @@ class Pathfinder:
 
 
 class PacmanGameController:
-    def __init__(self):
+    def __init__(self, width, height, renderer: GameRenderer):
         self.ascii_maze = [
             "XXXXXXXXXXXXXXXXXXXXXXXXXXXX",
             "XP           XX            X",
@@ -563,6 +587,12 @@ class PacmanGameController:
         self.size = (0, 0)
         self.convert_maze_to_numpy()
         self.p = Pathfinder(self.numpy_maze)
+        self._width = width
+        self._height = height
+        self.renderer = renderer
+
+    def get_width(self):
+        return self._width
 
     def request_new_random_path(self, in_ghost: Ghost):
         random_space = random.choice(self.reachable_spaces)
@@ -595,9 +625,12 @@ class PacmanGameController:
 
 if __name__ == "__main__":
     unified_size = 32
-    pacman_game = PacmanGameController()
-    size = pacman_game.size
-    game_renderer = GameRenderer(size[0] * unified_size, size[1] * unified_size)
+    maze_width = 28
+    maze_height = 31
+    pacman_game = PacmanGameController(maze_width, maze_height, None) # Create game controller first, renderer is None temporarily
+    game_renderer = GameRenderer(maze_width * unified_size, maze_height * unified_size, pacman_game) # Now create renderer with pacman_game
+    pacman_game.renderer = game_renderer # Set the renderer in pacman_game
+    size = (maze_width, maze_height)
 
     for y, row in enumerate(pacman_game.numpy_maze):
         for x, column in enumerate(row):
